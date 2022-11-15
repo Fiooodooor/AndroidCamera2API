@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Buffor glebi</string>
+    <string name="action_settings">Ustawienia</string>
+    <string name="delta_plus">D+</string>
+    <string name="delta_minus">D-</string>
+    <string name="af_on">AF ON</string>
+    <string name="af_trigger">TRIGG</string>
+</resources>
