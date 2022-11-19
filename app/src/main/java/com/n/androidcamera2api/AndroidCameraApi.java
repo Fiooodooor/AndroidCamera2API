@@ -11,17 +11,13 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
-import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
-import android.hardware.camera2.CaptureResult;
-import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.ImageReader;
 import android.os.Bundle;
 import android.util.Log;
 import android.util.Size;
-import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
@@ -35,20 +31,21 @@ import androidx.core.app.ActivityCompat;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Locale;
 import java.util.Objects;
 
 public class AndroidCameraApi extends AppCompatActivity {
-    private static final String TAG = "AndroidCameraApi";
-    private static final String callbackTag = "CameraState";
-    private static final String TOUCH_FOCUS_TAG = "TOUCH_FOCUS_TAG";
-    private static final String MANUAL_FOCUS_TAG = "MANUAL_FOCUS_TAG";
-    private static final String ACTIVE_FOCUS_TAG = "ACTIVE_FOCUS_TAG";
-    private boolean afEnabled = false;
-    private TextureView textureView;
-    private static final String[] afManualModesNames = {"AF_AUTO", "AF_MACRO", "AF_EDOF", "AF_OFF"};
-    private static final int[] afManualModes = {CameraMetadata.CONTROL_AF_MODE_AUTO, CameraMetadata.CONTROL_AF_MODE_MACRO, CameraMetadata.CONTROL_AF_MODE_EDOF, CameraMetadata.CONTROL_AF_MODE_OFF};
-    private static int afManualModesCurrentIndex = 0;
+    protected static final String TAG = "AndroidCameraApi";
+    protected static final String callbackTag = "CameraState";
+    protected static final String TOUCH_FOCUS_TAG = "TOUCH_FOCUS_TAG";
+    protected static final String MANUAL_FOCUS_TAG = "MANUAL_FOCUS_TAG";
+    protected static final String ACTIVE_FOCUS_TAG = "ACTIVE_FOCUS_TAG";
+    protected static final String ACTIVE_CHANGING_FOCUS_TAG = "ACTIVE_CHANGING_FOCUS_TAG";
+    protected String current_tag = ACTIVE_FOCUS_TAG;
+    protected boolean afEnabled = false;
+    protected TextureView textureView;
+    protected static final String[] afManualModesNames = {"AF_AUTO", "AF_MACRO", "AF_EDOF", "AF_OFF"};
+    protected static final int[] afManualModes = {CameraMetadata.CONTROL_AF_MODE_AUTO, CameraMetadata.CONTROL_AF_MODE_MACRO, CameraMetadata.CONTROL_AF_MODE_EDOF, CameraMetadata.CONTROL_AF_MODE_OFF};
+    protected static int afManualModesCurrentIndex = 0;
     protected CameraManager manager;
     protected String cameraId;
     protected CameraDevice cameraDevice;
@@ -57,23 +54,26 @@ public class AndroidCameraApi extends AppCompatActivity {
     protected CameraCharacteristics characteristics = null;
     protected SurfaceTexture texture = null;
     protected Surface surface = null;
-    private MeteringRectangle[] controlAfRegion = null;
-    private Size imageDimension;
-    private ImageReader imageReader;
-    private static final int REQUEST_CAMERA_PERMISSION = 200;
-    private BackgroundThreadHandler handlerManager;
+    protected MeteringRectangle[] controlAfRegion = null;
+    protected int afRegionsIndex = 0;
+    protected MeteringRectangle[] afRegions = new MeteringRectangle[4];
+    protected Size imageDimension;
+    protected ImageReader imageReader;
+    protected static final int REQUEST_CAMERA_PERMISSION = 200;
+    protected BackgroundThreadHandler handlerManager;
     TextView distanceTextView;
-    private boolean areWeFocused = false;
-    private boolean mManualFocusEngaged = false;
-    private int afStateLast = 0;
+    protected boolean areWeFocused = false;
+    protected boolean mManualFocusEngaged = false;
+    protected int afStateLast = 0;
+    int sensorOrientation = 90;
     Rect activeArraySize;
     Rect preActiveArraySize;
-    private float lensDistanceLastDiopters = 0.0f;
-    private float deltaFocus;
-    private float currentFocus;
-    private float currentFocusMeters = 0.0f;
-    private float minimumFocusMeters = 0.0f;
-    private float maximumFocusMeters = 0.0f;
+    protected float lensDistanceLastDiopters = 0.0f;
+    protected float deltaFocus;
+    protected float currentFocus;
+    protected float currentFocusMeters = 0.0f;
+    protected float minimumFocusMeters = 0.0f;
+    protected float maximumFocusMeters = 0.0f;
 
     TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() {
         @Override
@@ -130,7 +130,7 @@ public class AndroidCameraApi extends AppCompatActivity {
             }
             // When the session is ready, we start displaying the preview.
             cameraCaptureSessions = cameraCaptureSession;
-            updatePreview();
+            updatePreview(current_tag);
         }
         @Override
         public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
@@ -138,77 +138,7 @@ public class AndroidCameraApi extends AppCompatActivity {
             Toast.makeText(AndroidCameraApi.this, "Configuration change failed", Toast.LENGTH_SHORT).show();
         }
     };
-    final CameraCaptureSession.CaptureCallback captureCallbackListener
-            = new CameraCaptureSession.CaptureCallback() {
-        private void process(@NonNull CaptureRequest request,
-                             @NonNull CaptureResult result,
-                             boolean partial) {
-            int afStateCurrent = Objects.requireNonNull(result.get(CaptureResult.CONTROL_AF_STATE));
-            if (CaptureResult.CONTROL_AF_TRIGGER_START == afStateCurrent) {
-                if (areWeFocused) {
-                    Log.d(callbackTag, "captureCallbackListener process() called with focused state");
-                }
-            }
-            areWeFocused = CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED == afStateCurrent;
-            if (afStateCurrent != afStateLast) {
-                afStateLast = afStateCurrent;
-                Log.i(callbackTag, "afState=" + afStateCurrent + ", inFocus=" + areWeFocused);
-            }
-            if (result.get(CaptureResult.LENS_FOCUS_DISTANCE) != null) {
-                MeteringRectangle[] controlAfRegions;
-                float lensDistanceDiopters = Objects.requireNonNull(result.get(CaptureResult.LENS_FOCUS_DISTANCE));
-                float lensDistanceMeters = 1.0f / lensDistanceDiopters;
-                distanceTextView.setText(String.format(Locale.ENGLISH, "%.2f", lensDistanceMeters *100.0f));
-                if (request.get(CaptureRequest.CONTROL_AF_REGIONS) != null) {
-                    controlAfRegions = Objects.requireNonNull(request.get(CaptureRequest.CONTROL_AF_REGIONS));
-                } else {
-                    controlAfRegions = new MeteringRectangle[0];
-                }
-
-                if(lensDistanceDiopters != lensDistanceLastDiopters) {
-                    lensDistanceLastDiopters = lensDistanceDiopters;
-                    Log.e(callbackTag,
-                          "focusDiopters=" + lensDistanceDiopters +
-                                ", focusMeters=" + lensDistanceMeters +
-                                ", inFocus=" + areWeFocused +
-                                ", partial=" + partial +
-                                ", controlAfRegions=" + controlAfRegions[0].toString());
-                }
-            }
-        }
-
-        @Override
-        public void onCaptureProgressed(@NonNull CameraCaptureSession session,
-                                        @NonNull CaptureRequest request,
-                                        @NonNull CaptureResult partialResult) {
-            super.onCaptureProgressed(session, request,  partialResult);
-            process(request, partialResult, true);
-        }
-
-        @Override
-        public void onCaptureCompleted(@NonNull CameraCaptureSession session,
-                                       @NonNull CaptureRequest request,
-                                       @NonNull TotalCaptureResult result) {
-            super.onCaptureCompleted(session, request, result);
-            mManualFocusEngaged = false;
-            process(request, result, false);
-            if (request.getTag() == TOUCH_FOCUS_TAG) {
-                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
-                try {
-                    cameraCaptureSessions.setRepeatingRequest(captureRequestBuilder.build(), captureCallbackListener, handlerManager.mRequestHandler());
-                } catch (CameraAccessException e) {
-                    e.printStackTrace();
-                }
-            }
-        }
-
-        @Override
-        public void onCaptureFailed(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull CaptureFailure failure) {
-            super.onCaptureFailed(session, request, failure);
-            Log.e(callbackTag, "Capture AF failure: " + failure);
-            mManualFocusEngaged = false;
-        }
-    };
+    final CameraCaptureSession.CaptureCallback captureCallbackListener = new CaptureSessionCaptureCallback(this);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -232,85 +162,32 @@ public class AndroidCameraApi extends AppCompatActivity {
         assert afTriggerButton != null;
         assert textureTouchView != null;
 
-        textureTouchView.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent motionEvent) {
-                final int actionMasked = motionEvent.getActionMasked();
-                if (actionMasked != MotionEvent.ACTION_DOWN) {
-                    return false;
-                }
-                if (mManualFocusEngaged) {
-                    Log.d(TAG, "Manual focus already engaged");
-                    return true;
-                }
-                view.performClick();
-                MeteringRectangle focusAreaTouch = convertTouchToTexture(view, motionEvent);
-                try {
-                    cameraCaptureSessions.stopRepeating();
-                    //cancel any existing AF trigger (repeated touches, etc.)
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
-                    cameraCaptureSessions.capture(captureRequestBuilder.build(), captureCallbackListener, handlerManager.mRequestHandler());
+        textureTouchView.setOnTouchListener(new ViewOnTouchListener(this));
 
-                    //Now add a new AF trigger with focus region
-                    if (isMeteringAreaAFSupported()) {
-                        captureRequestBuilder.set(CaptureRequest.CONTROL_AF_REGIONS, new MeteringRectangle[]{focusAreaTouch});
-                    }
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, afManualModes[afManualModesCurrentIndex]);
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
-                    captureRequestBuilder.setTag(TOUCH_FOCUS_TAG);
-
-                    //then we ask for a single request (not repeating!)
-                    cameraCaptureSessions.capture(captureRequestBuilder.build(), captureCallbackListener, handlerManager.mRequestHandler());
-                    mManualFocusEngaged = true;
-                } catch (CameraAccessException | NullPointerException e) {
-                    e.printStackTrace();
-                }
-                return true;
+        afTriggerButton.setOnClickListener(v -> {
+            if(++afManualModesCurrentIndex >= afManualModes.length) {
+                afManualModesCurrentIndex = 0;
             }
-            private boolean isMeteringAreaAFSupported() throws NullPointerException {
-                return Objects.requireNonNull(characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF)) >= 1;
-            }
-        });
-        afTriggerButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if(++afManualModesCurrentIndex >= afManualModes.length) {
-                    afManualModesCurrentIndex = 0;
-                }
-                afTriggerButton.setText(afManualModesNames[afManualModesCurrentIndex]);
-            }
+            afTriggerButton.setText(afManualModesNames[afManualModesCurrentIndex]);
         });
         afTriggerButton.setText(afManualModesNames[afManualModesCurrentIndex]);
-        deltaMinusButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                currentFocusMeters -= deltaFocus;
-                if(currentFocusMeters < minimumFocusMeters) {
-                    currentFocusMeters = minimumFocusMeters;
-                }
-                currentFocus = 1.0f/currentFocusMeters;
-                takePicture(false);
+        deltaMinusButton.setOnClickListener(v -> {
+            currentFocusMeters -= deltaFocus;
+            if(currentFocusMeters < minimumFocusMeters) {
+                currentFocusMeters = minimumFocusMeters;
             }
+            currentFocus = 1.0f/currentFocusMeters;
+            takePicture(false);
         });
-        deltaPlusButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                currentFocusMeters += deltaFocus;
-                if(currentFocusMeters > maximumFocusMeters) {
-                    currentFocusMeters = maximumFocusMeters;
-                }
-                currentFocus = 1.0f/currentFocusMeters;
-                takePicture(false);
+        deltaPlusButton.setOnClickListener(v -> {
+            currentFocusMeters += deltaFocus;
+            if(currentFocusMeters > maximumFocusMeters) {
+                currentFocusMeters = maximumFocusMeters;
             }
+            currentFocus = 1.0f/currentFocusMeters;
+            takePicture(false);
         });
-        afOnButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                takePicture(true);
-            }
-        });
+        afOnButton.setOnClickListener(v -> takePicture(true));
     }
     protected void takePicture(boolean enableAf) {
         afEnabled = enableAf;
@@ -334,15 +211,19 @@ public class AndroidCameraApi extends AppCompatActivity {
                 surface = new Surface(texture);
             }
             if (captureRequestBuilder == null) {
-                captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
                 captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
                 captureRequestBuilder.addTarget(surface);
             }
 
 //            captureRequestBuilder.set(CaptureRequest.SENSOR_FRAME_DURATION, maxFrameDuration);
             if (afEnabled) {
-                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-                captureRequestBuilder.setTag(ACTIVE_FOCUS_TAG);
+                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO);
+                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
+//                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+//                captureRequestBuilder.setTag(ACTIVE_FOCUS_TAG);
+                captureRequestBuilder.setTag(ACTIVE_CHANGING_FOCUS_TAG);
+                current_tag = ACTIVE_CHANGING_FOCUS_TAG;
             } else {
                 captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
                 captureRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, currentFocus);
@@ -370,7 +251,8 @@ public class AndroidCameraApi extends AppCompatActivity {
             }
             StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             assert map != null;
-            imageDimension = map.getOutputSizes(SurfaceTexture.class)[0];
+            Log.e(TAG, "openCamera StreamConfigurationMap " + map);
+            imageDimension = map.getOutputSizes(SurfaceTexture.class)[13];
             // Add permission for camera and let user grant the permission
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(AndroidCameraApi.this, new String[]{Manifest.permission.CAMERA, Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CAMERA_PERMISSION);
@@ -385,23 +267,36 @@ public class AndroidCameraApi extends AppCompatActivity {
     protected void readCharacteristics() throws NullPointerException {
         for(CameraCharacteristics.Key<?> it : characteristics.getKeys()) {
             Object keyValue = characteristics.get(it);
-            if (keyValue == null)  {
-                keyValue = -1;
+            assert keyValue != null;
+            String value = keyValue.toString();
+            if(keyValue.getClass().isArray()) {
+                if(keyValue.getClass().getComponentType() == int.class) {
+                    value = Arrays.toString((int[]) keyValue);
+                } else if (keyValue.getClass().getComponentType() == float.class) {
+                    value = Arrays.toString((float[]) keyValue);
+                } else if (keyValue.getClass().getComponentType() == long.class) {
+                    value = Arrays.toString((long[]) keyValue);
+                }
             }
-            Log.e("Keys", it.toString() + ", value=" + keyValue.toString() + ",  name=" + it.getName());
+
+            Log.e("Keys", it.toString() + ", value=" + value + ",  name=" + it.getName());
         }
         float minimumFocus = Objects.<Float>requireNonNull(characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE));
         float maximumFocus = Objects.<Float>requireNonNull(characteristics.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE));
         int distanceCalibration = Objects.requireNonNull(characteristics.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION));
         float[] focalLengths = Objects.requireNonNull(characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS));
         int hardwareLevel = Objects.requireNonNull(characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL));
-        int sensorOrientation = Objects.requireNonNull(characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION));
+        sensorOrientation = Objects.requireNonNull(characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION));
         long maxFrameDuration = Objects.requireNonNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION));
         int afMaxRegions = Objects.requireNonNull(characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF));
         activeArraySize = Objects.requireNonNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE));
         preActiveArraySize = Objects.requireNonNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE));
+        afRegions[0] = new MeteringRectangle(0, 0, activeArraySize.width()/2, activeArraySize.height()/2, MeteringRectangle.METERING_WEIGHT_MAX - 1);
+        afRegions[1] = new MeteringRectangle(activeArraySize.width()/2, 0, activeArraySize.width()/2, activeArraySize.height()/2, MeteringRectangle.METERING_WEIGHT_MAX - 1);
+        afRegions[2] = new MeteringRectangle(0, activeArraySize.height()/2, activeArraySize.width()/2, activeArraySize.height()/2, MeteringRectangle.METERING_WEIGHT_MAX - 1);
+        afRegions[3] = new MeteringRectangle(activeArraySize.width()/2, activeArraySize.height()/2, activeArraySize.width()/2, activeArraySize.height()/2, MeteringRectangle.METERING_WEIGHT_MAX - 1);
 
-        Log.e(TAG, "params read: distCalibr=" + distanceCalibration + ", focalLen=" + Arrays.toString(focalLengths));
+        Log.e(TAG, "params read: distCalibration=" + distanceCalibration + ", focalLen=" + Arrays.toString(focalLengths));
         Log.e(TAG, "focus read: afMaxRegions=" + afMaxRegions + ", min=" + minimumFocus + ", max=" + maximumFocus);
         Log.e(TAG, "maxFrameDuration=" + maxFrameDuration + ", hardwareLevel=" + hardwareLevel + ", sensOrient=" + sensorOrientation);
         Log.e(TAG, "activeArraySize bottom=" + activeArraySize.bottom + ", top=" + activeArraySize.top + ", left=" + activeArraySize.left + ", right=" + activeArraySize.right);
@@ -419,40 +314,19 @@ public class AndroidCameraApi extends AppCompatActivity {
         currentFocus = 1.0f/currentFocusMeters;
         Log.e(TAG, "minimumFocusMeters=" + minimumFocusMeters + ", maximumFocusMeters=" + maximumFocusMeters + ", deltaFocusMeters=" + deltaFocus);
     }
-    protected MeteringRectangle convertTouchToTexture(View view, MotionEvent motionEvent) {
-        final Rect sensorArraySize  = Objects.requireNonNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE));
-        final int sensorOrientation = Objects.requireNonNull(characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION));
-        Log.e("TOUCH", "X=" + motionEvent.getX() + ", Y=" + motionEvent.getY() + ", Major=" + motionEvent.getTouchMajor() + ", Minor=" + motionEvent.getTouchMinor());
-        final float xNormalized = motionEvent.getX() / (float)view.getWidth();
-        final float yNormalized = motionEvent.getY() / (float)view.getHeight();
-        int xSensor = (int)(xNormalized * (float)sensorArraySize.width());
-        int ySensor = (int)(yNormalized * (float)sensorArraySize.height());
 
-        if (sensorOrientation == 90) {
-            xSensor = (int)(yNormalized * (float)sensorArraySize.width());
-            ySensor = (int)((1.0f-xNormalized) * (float)sensorArraySize.height());
-        } else if (sensorOrientation == 180) {
-            xSensor = (int)((1.0f-xNormalized) * (float)sensorArraySize.width());
-            ySensor = (int)((1.0f-yNormalized) * (float)sensorArraySize.height());
-        } else if (sensorOrientation == 270) {
-            xSensor = (int)((1.0f-yNormalized) * (float)sensorArraySize.width());
-            ySensor = (int)(xNormalized * (float)sensorArraySize.height());
-        }
-
-        final int halfTouchWidth  = (int)motionEvent.getTouchMajor();
-        final int halfTouchHeight = (int)motionEvent.getTouchMinor();
-        Log.e("TRANSLATED", "X=" + xSensor + ", Y=" + ySensor + ", halfTouchWidth=" + halfTouchWidth + ", halfTouchHeight=" + halfTouchHeight);
-        return new MeteringRectangle(Math.max(xSensor - halfTouchWidth,  0),
-                Math.max(ySensor - halfTouchHeight, 0),
-                halfTouchWidth  * 2,
-                halfTouchHeight * 2,
-                MeteringRectangle.METERING_WEIGHT_MAX - 1);
-    }
-
-    protected void updatePreview() {
+    protected void updatePreview(String use_tag) {
         Log.d(TAG, "App updatePreview() called");
         if(cameraDevice == null) {
             Log.e(TAG, "App updatePreview() error, returning");
+        } else if (use_tag.equals(ACTIVE_CHANGING_FOCUS_TAG)) {
+            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_REGIONS, new MeteringRectangle[]{afRegions[afRegionsIndex]});
+            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
+            try {
+                cameraCaptureSessions.capture(captureRequestBuilder.build(), captureCallbackListener, handlerManager.mRequestHandler());
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
         } else {
             try {
                 cameraCaptureSessions.setRepeatingRequest(captureRequestBuilder.build(), captureCallbackListener, handlerManager.mRequestHandler());
@@ -493,6 +367,7 @@ public class AndroidCameraApi extends AppCompatActivity {
     }
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
             if (grantResults[0] == PackageManager.PERMISSION_DENIED) {
                 // close the app
