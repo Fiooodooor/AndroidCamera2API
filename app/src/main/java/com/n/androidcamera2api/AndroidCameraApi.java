@@ -42,7 +42,6 @@ public class AndroidCameraApi extends AppCompatActivity {
     protected static final String ACTIVE_CHANGING_FOCUS_TAG = "ACTIVE_CHANGING_FOCUS_TAG";
     protected String current_tag = ACTIVE_FOCUS_TAG;
     protected boolean afEnabled = false;
-    protected TextureView textureView;
     protected static final String[] afManualModesNames = {"AF_AUTO", "AF_MACRO", "AF_EDOF", "AF_OFF"};
     protected static final int[] afManualModes = {CameraMetadata.CONTROL_AF_MODE_AUTO, CameraMetadata.CONTROL_AF_MODE_MACRO, CameraMetadata.CONTROL_AF_MODE_EDOF, CameraMetadata.CONTROL_AF_MODE_OFF};
     protected static int afManualModesCurrentIndex = 0;
@@ -52,8 +51,6 @@ public class AndroidCameraApi extends AppCompatActivity {
     protected CameraCaptureSession cameraCaptureSessions;
     protected CaptureRequest.Builder captureRequestBuilder = null;
     protected CameraCharacteristics characteristics = null;
-    protected SurfaceTexture texture = null;
-    protected Surface surface = null;
     protected MeteringRectangle[] controlAfRegion = null;
     protected int afRegionsIndex = 0;
     protected MeteringRectangle[] afRegions = new MeteringRectangle[4];
@@ -75,29 +72,8 @@ public class AndroidCameraApi extends AppCompatActivity {
     protected float minimumFocusMeters = 0.0f;
     protected float maximumFocusMeters = 0.0f;
 
-    TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() {
-        @Override
-        public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-            Log.e(TAG, "onSurfaceTextureAvailable()");
-            //open your camera here
-            openCamera();
-        }
-
-        @Override
-        public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
-            Log.e(TAG, "onSurfaceTextureSizeChanged()");
-            // Transform you image captured size according to the surface width and height
-        }
-
-        @Override
-        public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
-            return false;
-        }
-
-        @Override
-        public void onSurfaceTextureUpdated(SurfaceTexture surface) {
-        }
-    };
+    protected CameraPreviewTextureListener cameraTextureListener;
+    protected CanvasTextureListener canvasTextureListener;
 
     private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
         @Override
@@ -144,9 +120,9 @@ public class AndroidCameraApi extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_android_camera_api);
-        textureView = (TextureView) findViewById(R.id.texture);
-        assert textureView != null;
-        textureView.setSurfaceTextureListener(textureListener);
+        cameraTextureListener = new CameraPreviewTextureListener(this);
+        canvasTextureListener = new CanvasTextureListener(this);
+
         View textureTouchView = (View) findViewById(R.id.textureTouchView);
         Button deltaPlusButton = (Button) findViewById(R.id.delta_plus);
         Button deltaMinusButton = (Button) findViewById(R.id.delta_minus);
@@ -161,7 +137,6 @@ public class AndroidCameraApi extends AppCompatActivity {
         assert distanceTextView != null;
         assert afTriggerButton != null;
         assert textureTouchView != null;
-
         textureTouchView.setOnTouchListener(new ViewOnTouchListener(this));
 
         afTriggerButton.setOnClickListener(v -> {
@@ -202,18 +177,12 @@ public class AndroidCameraApi extends AppCompatActivity {
                 int vertical = (activeArraySize.bottom-activeArraySize.top)/2;
                 controlAfRegion[0] = new MeteringRectangle(horizontal-10, vertical-10, 20, 20, 100);
             }
-            if (texture == null) {
-                texture = textureView.getSurfaceTexture();
-                assert texture != null;
-                texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
-            }
-            if (surface == null) {
-                surface = new Surface(texture);
-            }
+            cameraTextureListener.initializeSurface(imageDimension.getWidth(), imageDimension.getHeight());
+
             if (captureRequestBuilder == null) {
                 captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
                 captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                captureRequestBuilder.addTarget(surface);
+                captureRequestBuilder.addTarget(cameraTextureListener.getCameraTextureSurface());
             }
 
 //            captureRequestBuilder.set(CaptureRequest.SENSOR_FRAME_DURATION, maxFrameDuration);
@@ -221,21 +190,22 @@ public class AndroidCameraApi extends AppCompatActivity {
                 captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO);
                 captureRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
 //                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-//                captureRequestBuilder.setTag(ACTIVE_FOCUS_TAG);
                 captureRequestBuilder.setTag(ACTIVE_CHANGING_FOCUS_TAG);
                 current_tag = ACTIVE_CHANGING_FOCUS_TAG;
+//                captureRequestBuilder.setTag(ACTIVE_CHANGING_FOCUS_TAG);
+//                current_tag = ACTIVE_CHANGING_FOCUS_TAG;
             } else {
                 captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
                 captureRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, currentFocus);
                 captureRequestBuilder.setTag(MANUAL_FOCUS_TAG);
                 Log.e(TAG, "new MAN focus " + (currentFocus));
             }
-            cameraDevice.createCaptureSession(Collections.singletonList(surface), stateCallbackListener, handlerManager.mSessionHandler());
+            cameraDevice.createCaptureSession(Collections.singletonList(cameraTextureListener.getCameraTextureSurface()), stateCallbackListener, handlerManager.mSessionHandler());
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
     }
-    private void openCamera() {
+    protected void openCamera() {
         manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         assert manager != null;
         Log.e(TAG, "openCamera() Build.VERSION.SDK_IN=" + android.os.Build.VERSION.SDK_INT + ", Build.VERSION_CODES.P=" + android.os.Build.VERSION_CODES.P);
@@ -334,6 +304,7 @@ public class AndroidCameraApi extends AppCompatActivity {
                 e.printStackTrace();
             }
         }
+
     }
     private void startBackgroundThreads() {
         if(handlerManager == null) {
@@ -381,10 +352,13 @@ public class AndroidCameraApi extends AppCompatActivity {
         Log.d(TAG, "App onResume() called");
         super.onResume();
         startBackgroundThreads();
-        if (textureView.isAvailable()) {
+        if (cameraTextureListener.isTextureViewAvailable()) {
             openCamera();
         } else {
-            textureView.setSurfaceTextureListener(textureListener);
+            cameraTextureListener.reassignListener();
+        }
+        if (!canvasTextureListener.isTextureViewAvailable()) {
+            canvasTextureListener.reassignListener();
         }
     }
     @Override

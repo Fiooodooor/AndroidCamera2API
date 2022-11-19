@@ -7,7 +7,16 @@
     tools:context="com.n.androidcamera2api.AndroidCameraApi">
 
     <TextureView
-        android:id="@+id/texture"
+        android:id="@+id/previewTexture"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_above="@+id/delta_plus"
+        android:layout_alignParentTop="true"
+        android:layout_marginTop="0dp"
+        android:layout_marginBottom="16dp" />
+
+    <TextureView
+        android:id="@+id/canvasTexture"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_above="@+id/delta_plus"
@@ -34,10 +43,10 @@
         android:id="@+id/textureTouchView"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_alignStart="@id/texture"
-        android:layout_alignTop="@id/texture"
-        android:layout_alignEnd="@id/texture"
-        android:layout_alignBottom="@id/texture" />
+        android:layout_alignStart="@id/previewTexture"
+        android:layout_alignTop="@id/previewTexture"
+        android:layout_alignEnd="@id/previewTexture"
+        android:layout_alignBottom="@id/previewTexture" />
 
     <Space
         android:id="@+id/bottomSpace"

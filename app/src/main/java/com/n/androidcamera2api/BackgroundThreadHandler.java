@@ -2,9 +2,16 @@ package com.n.androidcamera2api;
 
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.text.PrecomputedText;
+import android.widget.TextView;
+
+import java.lang.ref.Reference;
+import java.lang.ref.WeakReference;
+import java.util.concurrent.Executor;
 
 public class BackgroundThreadHandler {
     final private static String[] names = {"OpenCameraHandler", "CaptureSessionHandler", "CaptureRequestHandler"};
+    protected Executor bgTextExecutor = null;
     protected Handler[] handlers = null;
     protected HandlerThread[] threads = null;
 
@@ -22,6 +29,7 @@ public class BackgroundThreadHandler {
             this.threads[it].start();
             this.handlers[it] = new Handler(threads[it].getLooper());
         }
+        this.bgTextExecutor = new SerialExecutor();
     }
     public void stop() {
         assert this.threads != null;
@@ -41,6 +49,7 @@ public class BackgroundThreadHandler {
         }
         this.threads = null;
         this.handlers = null;
+        this.bgTextExecutor = null;
     }
 
     public Handler mCameraHandler() {
@@ -62,6 +71,20 @@ public class BackgroundThreadHandler {
         } else {
             return null;
         }
+    }
+    public void asyncSetText(TextView textView, final String longString) {
+        final PrecomputedText.Params params = textView.getTextMetricsParams();
+        final Reference<TextView> textViewRef = new WeakReference<>(textView);
+        bgTextExecutor.execute(() -> {
+            TextView tTextView = textViewRef.get();
+            if (tTextView == null) return;
+            final PrecomputedText precomputedText = PrecomputedText.create(longString, params);
+            tTextView.post(() -> {
+                TextView postTextView = textViewRef.get();
+                if (postTextView == null) return;
+                postTextView.setText(precomputedText);
+            });
+        });
     }
 //    private void start() {
 //        BackgroundThreadHandler mOpenCameraBgHandler, mCaptureSessionBgHandler, mCaptureRequestBgHandler;
